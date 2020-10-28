@@ -7,6 +7,7 @@ from torch.distributions.constraints import interval, unit_interval
 
 from splines import quadratic, linear
 from spline_utils import SplineFunction
+from logistic import DLogistic
 
 class PiecewiseLinear(Distribution):
     """
@@ -223,6 +224,66 @@ class BinaryPWL(PiecewiseLinear):
             raise ValueError('w_t out of range')
         if not 1e-6 < self.w_s < 0.5:
             raise ValueError('w_s out of range')
+
+
+class PMFPWL(PiecewiseLinear):
+    def __init__(self, pmf_x, pmf_y, k_min, k_max, h_d=1e-3, s=0.1, validate_args=None):
+        x, y = self.make_knots(pmf_x, pmf_y, h_d, s)
+        x_range = [k_min-0.5, k_max+0.5]
+        super().__init__(x, y, x_range=x_range, validate_args=validate_args)
+    
+    def make_knots(self, k, y, h_d, s):
+        x = torch.linspace(-0.5, 0.5, 7)[:-1].repeat(*k.shape, 1).to(k.device) + k.unsqueeze(-1)
+
+        # set min(y) s.t. min(spline_y) = h_d
+        # TODO check this
+        y = y - 60 * h_d * (y.shape[-1] * y - 1)
+
+        h_k = (2 * y - h_d/3)
+        h_scale = torch.Tensor([0, s, 1-s, 1, 1-s, s]).repeat(*k.shape, 1).to(k.device)
+        h = h_scale * h_k.unsqueeze(-1)
+        h[..., 0] = h_d
+
+        x_final = k[..., -1:] + 0.5
+        x = torch.cat([x.view(*k.shape[:-1], -1), x_final], -1)
+        h_final = torch.full([*k.shape[:-1], 1], h_d).to(k.device)
+        h = torch.cat([h.view(*k.shape[:-1], -1), h_final], -1)
+        return x, h
+
+class DLogisticPWL(PiecewiseLinear):
+    def __init__(self, loc, scale, k_min, k_max, h_d=1e-5, s=0.1, validate_args=None):
+        if scale.shape != loc.shape:
+            scale = scale.expand_as(loc)
+        kx, ky = self.make_pmf(loc, scale, k_min, k_max)
+        x, y = self.make_knots(kx, ky, h_d, s)
+        x_range = (k_min-0.5, k_max+0.5)
+        super().__init__(x, y, x_range=x_range, validate_args=validate_args)
+
+    @staticmethod
+    def make_pmf(loc, scale, k_min, k_max):
+        p = DLogistic(loc, scale, 1., k_min, k_max)
+        x = torch.arange(k_min, k_max+1).repeat(*loc.shape, 1).to(loc.device)
+        return x, p.pmf(x)
+
+    @staticmethod
+    def make_knots(k, y, h_d, s):
+        x = torch.linspace(-0.5, 0.5, 7)[:-1].repeat(*k.shape, 1).to(k.device) + k.unsqueeze(-1)
+
+        # set min(y) s.t. min(spline_y) = h_d
+        # TODO check this
+        y = y - 60 * h_d * (y.shape[-1] * y - 1)
+
+        h_k = (2 * y - h_d/3)
+        h_scale = torch.Tensor([0, s, 1-s, 1, 1-s, s]).repeat(*k.shape, 1).to(k.device)
+        h = h_scale * h_k.unsqueeze(-1)
+        h[..., 0] = h_d
+
+        x_final = k[..., -1:] + 0.5
+        x = torch.cat([x.view(*k.shape[:-1], -1), x_final], -1)
+        h_final = torch.full([*k.shape[:-1], 1], h_d).to(k.device)
+        h = torch.cat([h.view(*k.shape[:-1], -1), h_final], -1)
+        return x, h
+
 
 @register_kl(PiecewiseLinear, PiecewiseLinear)
 def kl_pwl_pwl(p, q):
