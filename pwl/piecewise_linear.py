@@ -8,6 +8,7 @@ from torch.distributions.constraints import interval, unit_interval
 from splines import quadratic, linear
 from spline_utils import SplineFunction
 from logistic import DLogistic
+from spline_shape import ExponentialShape
 
 class PiecewiseLinear(Distribution):
     """
@@ -227,12 +228,12 @@ class BinaryPWL(PiecewiseLinear):
 
 
 class PMFPWL(PiecewiseLinear):
-    def __init__(self, pmf_x, pmf_y, k_min, k_max, h_d=1e-3, s=0.1, validate_args=None):
-        x, y = self.make_knots(pmf_x, pmf_y, h_d, s)
+    def __init__(self, pmf_x, pmf_y, k_min, k_max, h_d=1e-3, s=0.1, num_knots=7, validate_args=None):
+        x, y = self.make_knots(pmf_x, pmf_y, h_d, num_knots, s)
         x_range = [k_min-0.5, k_max+0.5]
         super().__init__(x, y, x_range=x_range, validate_args=validate_args)
     
-    def make_knots(self, k, y, h_d, s):
+    def make_knots_old(self, k, y, h_d, s):
         x = torch.linspace(-0.5, 0.5, 7)[:-1].repeat(*k.shape, 1).to(k.device) + k.unsqueeze(-1)
 
         # set min(y) s.t. min(spline_y) = h_d
@@ -243,6 +244,23 @@ class PMFPWL(PiecewiseLinear):
         h_scale = torch.Tensor([0, s, 1-s, 1, 1-s, s]).repeat(*k.shape, 1).to(k.device)
         h = h_scale * h_k.unsqueeze(-1)
         h[..., 0] = h_d
+
+        x_final = k[..., -1:] + 0.5
+        x = torch.cat([x.view(*k.shape[:-1], -1), x_final], -1)
+        h_final = torch.full([*k.shape[:-1], 1], h_d).to(k.device)
+        h = torch.cat([h.view(*k.shape[:-1], -1), h_final], -1)
+        return x, h
+
+    def make_knots(self, k, y, h_d, num_knots, shape_arg):
+        x = torch.linspace(-0.5, 0.5, num_knots)[:-1].repeat(*k.shape, 1).to(k.device) + k.unsqueeze(-1)
+        base_shape = ExponentialShape(num_knots, shape_arg).base_shape
+        
+        a = h_d / (1 - y.shape[-1] * h_d)
+        y_scaled = (y + a) / (1 + y.shape[-1] * a)
+
+        h_k = (2 * y - h_d/3)
+        h_scale = base_shape[...,:-1].repeat(*k.shape, 1).to(k.device)
+        h = h_scale * (y_scaled.unsqueeze(-1) - h_d) + h_d
 
         x_final = k[..., -1:] + 0.5
         x = torch.cat([x.view(*k.shape[:-1], -1), x_final], -1)
