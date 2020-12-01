@@ -9,6 +9,7 @@ from splines import quadratic, linear
 from spline_utils import SplineFunction
 from spline_shape import ExponentialShape, ZShape
 from logistic import DLogistic
+from spline_shape import ExponentialShape
 
 class PiecewiseLinear(Distribution):
     """
