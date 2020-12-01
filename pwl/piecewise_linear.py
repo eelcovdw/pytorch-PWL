@@ -7,6 +7,7 @@ from torch.distributions.constraints import interval, unit_interval
 
 from splines import quadratic, linear
 from spline_utils import SplineFunction
+from spline_shape import ExponentialShape, ZShape
 from logistic import DLogistic
 
 class PiecewiseLinear(Distribution):
@@ -128,12 +129,8 @@ class PiecewiseLinear(Distribution):
         else:
             raise NotImplementedError("Cross-entropy with different bin widths is not yet implemented.")
 
-        # Get partial cross-entropy for each bin and sum.
-        h_total = torch.zeros(*p.x.shape[:-1]).type(p.x.type())
-        for i in range(p.x.size(-1) - 1):
-            h_bin = ce_bin(p.a[..., i], p.b[..., i], q.a[..., i], q.b[..., i], p.bin_widths[..., i])
-            h_total += h_bin
-        return h_total
+        h_bin = ce_bin(p.a, p.b, q.a, q.b, p.bin_widths)
+        return h_bin.sum(-1)
 
     def entropy(self):
         """Calculate entropy of distribution, available in closed form
@@ -158,12 +155,8 @@ class PiecewiseLinear(Distribution):
 
             return torch.where(a == 0, h0, h)
 
-        h_total = torch.zeros(*self.x.shape[:-1]).type(self.x.type())
-        for i in range(self.x.size(-1)-1):
-            h_bin = entropy_bin(self.a[..., i], self.b[..., i], self.bin_widths[..., i])
-            h_total += h_bin
-        return h_total
-
+        h_bin = entropy_bin(self.a, self.b, self.bin_widths)
+        return h_bin.sum(-1)
 
 class BinaryPWL(PiecewiseLinear):
 
@@ -189,8 +182,6 @@ class BinaryPWL(PiecewiseLinear):
             h_d (float, optional): Height of center knot. Defaults to 0.01.
             s (float, optional): Slope of line segments. Defaults to 0.1.
         """
-        
-
 
         # Scale p to [h_d/2, 1-h_d/2]
         self.p = p * (1-h_d) + (h_d/2)
@@ -227,28 +218,35 @@ class BinaryPWL(PiecewiseLinear):
 
 
 class PMFPWL(PiecewiseLinear):
-    def __init__(self, pmf_x, pmf_y, k_min, k_max, h_d=1e-3, s=0.1, validate_args=None):
-        x, y = self.make_knots(pmf_x, pmf_y, h_d, s)
+    def __init__(self, pmf_x, pmf_y, k_min, k_max, h_d=1e-3, shape=ExponentialShape, shape_params=[4], num_knots=7, validate_args=None):
+        x, y = self.make_knots(pmf_x, pmf_y, h_d, shape, shape_params, num_knots)
         x_range = [k_min-0.5, k_max+0.5]
         super().__init__(x, y, x_range=x_range, validate_args=validate_args)
-    
-    def make_knots(self, k, y, h_d, s):
-        x = torch.linspace(-0.5, 0.5, 7)[:-1].repeat(*k.shape, 1).to(k.device) + k.unsqueeze(-1)
 
-        # set min(y) s.t. min(spline_y) = h_d
-        # TODO check this
-        y = y - 60 * h_d * (y.shape[-1] * y - 1)
+    def make_knots(self, k, y, h_d, shape, shape_params, num_knots):
+        x = torch.linspace(-0.5, 0.5, num_knots)[:-1].repeat(*k.shape, 1).to(k.device) + k.unsqueeze(-1)
+        base_shape = shape(num_knots, *shape_params).base_shape
 
-        h_k = (2 * y - h_d/3)
-        h_scale = torch.Tensor([0, s, 1-s, 1, 1-s, s]).repeat(*k.shape, 1).to(k.device)
-        h = h_scale * h_k.unsqueeze(-1)
-        h[..., 0] = h_d
+        a = h_d / (1 - y.shape[-1] * h_d)
+        y_scaled = (y + a) / (1 + y.shape[-1] * a)
+
+        h_scale = base_shape[...,:-1].repeat(*k.shape, 1).to(k.device)
+        h = h_scale * (y_scaled.unsqueeze(-1) - h_d) + h_d
 
         x_final = k[..., -1:] + 0.5
         x = torch.cat([x.view(*k.shape[:-1], -1), x_final], -1)
         h_final = torch.full([*k.shape[:-1], 1], h_d).to(k.device)
         h = torch.cat([h.view(*k.shape[:-1], -1), h_final], -1)
         return x, h
+
+
+class BinaryPWL2(PMFPWL):
+    def __init__(self, p, h_d, shape, shape_params, num_knots, validate_args=None):
+        self.probs = p
+        pmf_x = torch.stack([torch.zeros(*p.shape), torch.ones(*p.shape)], -1).to(p.device)
+        pmf_y = torch.stack([1-p, p], -1)
+        super().__init__(pmf_x, pmf_y, 0., 1., h_d, shape, shape_params, num_knots, validate_args=validate_args)
+
 
 class DLogisticPWL(PiecewiseLinear):
     def __init__(self, loc, scale, k_min, k_max, h_d=1e-5, s=0.1, validate_args=None):
@@ -289,27 +287,51 @@ class DLogisticPWL(PiecewiseLinear):
 def kl_pwl_pwl(p, q):
     return p.cross_entropy(q) - p.entropy()
 
+from probabll.dgm import register_conditional_parameterization, register_prior_parameterization
+DMIN = 1e-6
+@register_prior_parameterization(BinaryPWL)
+def parametrize(batch_shape, event_shape, params, device, dtype):
+    if len(params) == event_shape[0]:
+        d0 = torch.Tensor(params).type(dtype)
+        d0 = d0.repeat(batch_shape + [1]).to(device)
+    elif len(params) == 1:
+        d0 = torch.full(batch_shape + event_shape, params[0],
+                        device=device, dtype=dtype)
+    else:
+        raise ValueError('invalid number of params: {}'.format(len(params)))
+    return BinaryPWL(d0)
 
-# @register_prior_parameterization(BinaryPWL)
-# def parametrize(batch_shape, event_shape, params, device, dtype):
-#     if len(params) == event_shape[0]:
-#         d0 = torch.Tensor(params).type(dtype)
-#         d0 = d0.repeat(batch_shape + [1]).to(device)
-#     elif len(params) == 1:
-#         d0 = torch.full(batch_shape + event_shape, params[0],
-#                         device=device, dtype=dtype)
-#     else:
-#         raise ValueError('invalid number of params: {}'.format(len(params)))
-#     return BinaryPWL(d0)
+
+@register_conditional_parameterization(BinaryPWL)
+def make_binaryPWL(inputs, event_size):
+    if not inputs.size(-1) == event_size:
+        raise ValueError(
+            "Expected [...,%d] got [...,%d]" % (event_size, inputs.size(-1))
+        )
+
+    # Scale input between (DMIN, 1-DMIN). DMIN should be larger than middle.
+    inputs_scaled = torch.sigmoid(inputs) * (1 - 2 * DMIN) + DMIN
+    return BinaryPWL(inputs_scaled)
 
 
-# @register_conditional_parameterization(BinaryPWL)
-# def make_binaryPWL(inputs, event_size):
-#     if not inputs.size(-1) == event_size:
-#         raise ValueError(
-#             "Expected [...,%d] got [...,%d]" % (event_size, inputs.size(-1))
-#         )
+@register_prior_parameterization(BinaryPWL2)
+def parametrize(batch_shape, event_shape, params, device, dtype):
+    if len(params) == event_shape[0]:
+        p = torch.Tensor(params).type(dtype)
+        p = p.repeat(batch_shape + [1]).to(device)
+    elif len(params) == 1:
+        p = torch.full(batch_shape + event_shape, params[0],
+                        device=device, dtype=dtype)
+    else:
+        raise ValueError('invalid number of params: {}'.format(len(params)))
+    return BinaryPWL2(p, 0.0001, ExponentialShape, [50], 5)
 
-#     # Scale input between (DMIN, 1-DMIN). DMIN should be larger than middle.
-#     inputs_scaled = torch.sigmoid(inputs) * (1 - 2 * DMIN) + DMIN
-#     return BinaryPWL(inputs_scaled)
+
+@register_conditional_parameterization(BinaryPWL2)
+def make_binaryPWL2(inputs, event_size):
+    if not inputs.size(-1) == event_size:
+        raise ValueError(
+            "Expected [...,%d] got [...,%d]" % (event_size, inputs.size(-1))
+        )
+    # return BinaryPWL2(torch.sigmoid(inputs), 0.001, 2, 5)
+    return BinaryPWL2(torch.sigmoid(inputs), 0.001, ExponentialShape, [3], 5)

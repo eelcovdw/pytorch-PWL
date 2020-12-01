@@ -5,7 +5,9 @@ from torch.distributions import TransformedDistribution
 
 class Logistic(TransformedDistribution):
     def __init__(self, loc, scale, validate_args=None):
-        base_distribution = Uniform(0, 1)
+        self.loc = loc
+        self.scale = scale
+        base_distribution = Uniform(torch.Tensor([0]).to(loc.device), torch.Tensor([1]).to(loc.device))
         transforms = [SigmoidTransform().inv, AffineTransform(loc=loc, scale=scale)]
         super().__init__(base_distribution, transforms, validate_args=validate_args)
 
@@ -28,8 +30,8 @@ class DLogistic(Distribution):
         return torch.log(self.pmf(x))
 
     def pmf(self, x):
-        left = truncated_logistic_cdf(x - self.alpha/2, self.loc, self.scale, self.alpha, self.g0, self.gk)
-        right = truncated_logistic_cdf(x + self.alpha/2, self.loc, self.scale, self.alpha, self.g0, self.gk)
+        left = truncated_logistic_cdf(x - self.alpha/2, self.loc.unsqueeze(-1), self.scale.unsqueeze(-1), self.alpha, self.g0, self.gk)
+        right = truncated_logistic_cdf(x + self.alpha/2, self.loc.unsqueeze(-1), self.scale.unsqueeze(-1), self.alpha, self.g0, self.gk)
         return right - left
 
 

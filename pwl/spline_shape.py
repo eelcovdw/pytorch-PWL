@@ -47,3 +47,16 @@ class ExponentialShape(SplineShape):
         k = self.num_knots // 2
         n = (a**(1 + k) + k - a * (1 + k))/(a*k - k) - (a**k-1)/(2 * k)
         return n
+
+class ZShape(SplineShape):
+    def __init__(self, num_knots, slope):
+        """
+        A spline bump where y[n] = exp_base^n - 1 + min_height
+        """
+        assert num_knots == 7
+        self.slope = slope
+        super().__init__(num_knots=7)
+
+    def _base_shape(self):
+        left = torch.Tensor([0, self.slope, 1-self.slope, 1])
+        return torch.cat([left, torch.flip(left[:-1], [0])], 0) * 2
