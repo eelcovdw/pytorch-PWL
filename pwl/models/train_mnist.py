@@ -12,7 +12,7 @@ from vae import *
 
 def main():
     latent_size = 200
-    latent_dist = 'binary-concrete'
+    latent_dist = 'bernoulli'
     output_dir = f'./runs/mnist/{latent_dist}Z-{latent_size}'
     writer = SummaryWriter(output_dir)
     use_cuda = True
@@ -29,7 +29,7 @@ def main():
     
     model = build_model(latent_size, latent_dist).to(device)
     if latent_dist == "bernoulli":
-        train_step = train_step_arm
+        train_step = train_step_disarm
     else:
         train_step = train_step_grep
     opt = optim.Adam(model.parameters(), lr=0.001)

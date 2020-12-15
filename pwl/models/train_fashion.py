@@ -9,13 +9,13 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 import argparse
 
-import vae
-from vae import build_model, train_step_arm, train_step_grep
+from vae import build_model, train_step_arm, train_step_grep, train_step_arm_2, train_step_disarm
 
 def main(args):
     latent_size = args.latent_size
     latent_dist = args.latent_type
-    output_dir = f'./runs/fashion/{latent_dist}_p-{latent_size}'
+    estimator = args.estimator
+    output_dir = f'./runs/fashion/{latent_dist}-{estimator}-{latent_size}'
     writer = SummaryWriter(output_dir)
     use_cuda = True
     device = torch.device("cuda" if use_cuda else "cpu")
@@ -29,21 +29,16 @@ def main(args):
     test_loader = torch.utils.data.DataLoader(dataset2, **kwargs)
     
     
-    model = build_model(latent_size, latent_dist).to(device)
-    if latent_dist == "bernoulli":
-        train_step = train_step_arm
-        print("Estimator: ARM")
-    else:
-        train_step = train_step_grep
-        print("Estimator: Grep")
-    opt = optim.Adam(model.parameters(), lr=0.001)
+    model, train_step = build_model(latent_size, latent_dist, estimator)
+    model = model.to(device)
+    opt = torch.optim.Adam(model.parameters())
     print(model)
 
     step = 0
     for epoch in range(args.num_epochs):
         model.train()
         pbar = tqdm(train_loader)
-        for bx, by in pbar:
+        for bx, _ in pbar:
             step += 1
             bx = Bernoulli(probs=bx).sample()
 
@@ -80,6 +75,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", help="Minibatch size", type=int, default=128)
     parser.add_argument("--latent_size", help="size of z", type=int, default=64)
     parser.add_argument("--latent_type", help="Type of prior and posterior.", default="bernoulli")
+    parser.add_argument("--estimator", help="Estimator used, sfe|grep|arm|disarm", default="grep")
     args = parser.parse_args()
     for arg in args.__dict__:
         print("{}: {}".format(arg, getattr(args, arg)))

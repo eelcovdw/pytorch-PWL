@@ -30,7 +30,7 @@ def parametrize(batch_shape, event_shape, params, device, dtype):
     elif len(params) == event_shape[0]:
         p = torch.Tensor(params).type(dtype).repeat(batch_shape + [1]).to(device)
     # Prior temperature from [1]
-    temp = torch.Tensor([1.]).to(device)
+    temp = torch.Tensor([0.5]).to(device)
     return RelaxedBernoulli(temp, probs=p)
 
 
@@ -41,5 +41,5 @@ def make_relaxed_bernoulli(inputs, event_size):
             "Expected [...,%d] got [...,%d]" % (event_size, inputs.size(-1))
         )
     # Posterior temperature from [1]
-    temp = torch.Tensor([1.]).to(inputs.device)
+    temp = torch.Tensor([0.66]).to(inputs.device)
     return RelaxedBernoulli(temp, logits=inputs)

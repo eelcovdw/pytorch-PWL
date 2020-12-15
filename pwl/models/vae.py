@@ -121,6 +121,41 @@ def train_step_arm(model, x):
         "loss": loss,
         "kl": kl.detach(),
         "ll": ll.detach(),
+        "surrogate": surrogate.detach()
+    }
+    return return_dict
+
+
+def train_step_disarm(model, x):
+    p_z = model.p_z(x.size(0), x.device)
+    q_z = model.q_z(x)
+    z = q_z.sample()
+    p_x = model.p_x(z)
+
+    ll = p_x.log_prob(x).sum(-1)
+    kl = kl_divergence(q_z, p_z).sum(-1)
+    elbo = ll - kl
+    
+    # gradients w.r.t q_z with ARM
+    logits = q_z.logits
+    f = lambda b: model.p_x(b).log_prob(x).sum(-1)
+    with torch.no_grad():
+        u = torch.rand(logits.size()).to(logits.device)
+        eps = torch.logit(u)
+        b = (logits + eps > 0.).float()
+        b_ = (logits - eps > 0.).float()
+        r = f(b)
+        r_ = f(b_)
+        s = torch.pow(-1, b_) * (~torch.eq(b, b_)).float() * torch.sigmoid(torch.abs(logits))
+        reward = 0.5 * (r - r_).unsqueeze(-1) * s
+    surrogate = (reward * logits).sum(-1)
+
+    loss = -(elbo + surrogate).mean()
+
+    return_dict = {
+        "loss": loss,
+        "kl": kl.detach(),
+        "ll": ll.detach(),
         "surrogate": surrogate
     }
     return return_dict
@@ -137,21 +172,16 @@ def train_step_arm_2(model, x):
     
     # gradients w.r.t q_z with ARM
     logits = q_z.logits
-    q_log = Logistic(logits, torch.Tensor([1.]).to(logits.device))
-    probs = torch.sigmoid(logits)
+    f = lambda b: model.p_x(b).log_prob(x).sum(-1)
     with torch.no_grad():
-        z_log = q_log.sample().squeeze(-1)
-        u = torch.sigmoid(z_log - logits)
-        
-        sample_1 = ((1 - u) < probs).float()
-        reward_1 = model.p_x(sample_1).log_prob(x).sum(-1)
-        sample_2 = (u < probs).float()
-        reward_2 = model.p_x(sample_2).log_prob(x).sum(-1)
-        reward = 0.5 * (reward_1 - reward_2)
-        reward = reward.unsqueeze(1) * (2*u - 1)
-    surrogate = reward * logits
+        u = torch.rand(logits.size()).to(logits.device)
+        eps = torch.logit(u)
+        r = f((logits + eps > 0.).float())
+        r_ = f((logits - eps > 0.).float())
+        reward = 0.5 * (r - r_).unsqueeze(-1) * (2 * u - 1)
+    surrogate = (reward * logits).sum(-1)
 
-    loss = -(elbo + surrogate.mean(-1)).mean()
+    loss = -(elbo + surrogate).mean()
 
     return_dict = {
         "loss": loss,
@@ -161,7 +191,7 @@ def train_step_arm_2(model, x):
     }
     return return_dict
 
-def build_model(latent_size, latent_dist):
+def build_model(latent_size, latent_dist, estimator):
     if latent_dist == "bernoulli":
         posterior_type = Bernoulli
         prior_type = Bernoulli
@@ -190,6 +220,17 @@ def build_model(latent_size, latent_dist):
     else:
         raise ValueError(f'Unknown latent distribution: {latent_dist}')
 
+    if estimator.lower() == "sfe":
+        train_step = train_step_sfe
+    elif estimator.lower() == "grep":
+        train_step = train_step_grep
+    elif estimator.lower() == "arm" and latent_dist == "bernoulli":
+        train_step = train_step_arm_2
+    elif estimator.lower() == "disarm" and latent_dist == "bernoulli":
+        train_step = train_step_disarm
+    else:
+        raise ValueError(f"Unknown latent/estimator combination: {latent_dist} / {estimator}")
+
     conditional_z = ConditionalLayer(
         event_size=latent_size,
         dist_type=posterior_type,
@@ -217,7 +258,7 @@ def build_model(latent_size, latent_dist):
     )
 
     model = VAE(28*28, latent_size, conditional_x, conditional_z, prior_z)
-    return model
+    return model, train_step
 
 @register_conditional_parameterization(Bernoulli)
 def make_bernoulli(inputs, event_size):

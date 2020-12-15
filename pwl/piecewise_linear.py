@@ -325,7 +325,7 @@ def parametrize(batch_shape, event_shape, params, device, dtype):
                         device=device, dtype=dtype)
     else:
         raise ValueError('invalid number of params: {}'.format(len(params)))
-    return BinaryPWL2(p, 0.0001, ExponentialShape, [50], 5)
+    return BinaryPWL2(p, 1e-4, ExponentialShape, [50], 5)
 
 
 @register_conditional_parameterization(BinaryPWL2)
@@ -335,4 +335,4 @@ def make_binaryPWL2(inputs, event_size):
             "Expected [...,%d] got [...,%d]" % (event_size, inputs.size(-1))
         )
     # return BinaryPWL2(torch.sigmoid(inputs), 0.001, 2, 5)
-    return BinaryPWL2(torch.sigmoid(inputs), 0.001, ExponentialShape, [3], 5)
+    return BinaryPWL2(torch.sigmoid(inputs), 1e-2, ExponentialShape, [3], 5)
