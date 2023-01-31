@@ -1,6 +1,2 @@
 # pytorch-PWL
-Piecewise linear distributions in Pytorch
-
-# Docs
-
-Poisson - https://www.overleaf.com/6922592116fftbrktdmgcz
+This repository contains implementation and experiments on piecewise linear distributions. Examples can be found in the notebooks folder.
